@@ -35,24 +35,37 @@ def run_scenario(scenario: str = typer.Option("direct_refusal", "--scenario"),
 def llm_run(scenario: str = typer.Option("legitimate_task_decomposition", "--scenario"),
             db: str = typer.Option("swarmguard-llm.db", "--db"),
             mode: str = typer.Option("enforce", "--mode"),
+            provider: str = typer.Option("fake", "--provider"),
             endpoint: str | None = typer.Option(None, "--endpoint"),
             model: str = typer.Option("llama3.2", "--model"),
             temperature: float = typer.Option(0.0, "--temperature"),
             seed: int | None = typer.Option(0, "--seed"),
-            fake_action: str = typer.Option("complete", "--fake-action")):
-    """Run an opt-in LLM policy; without --endpoint uses an offline fake adapter."""
-    from .engine import SimulationLayer
-    from .llm import FakeLLMAdapter, LLMPolicy, LocalHTTPAdapter
+            fake_action: str = typer.Option("complete", "--fake-action"),
+            api_key_env: str | None = typer.Option(None, "--api-key-env")):
+    """Run an opt-in LLM policy; fake is the offline default."""
+    from .llm import (FakeLLMAdapter, LLMPolicy, OllamaAdapter,
+                      OpenAICompatibleAdapter)
     from .experiment import M4_SCENARIOS
     if scenario not in M4_SCENARIOS:
         raise typer.BadParameter("unknown interaction scenario")
     # Keep CLI offline by default and reuse the executable scenario factory.
-    adapter = (LocalHTTPAdapter(endpoint, model) if endpoint else
-               FakeLLMAdapter({"action": fake_action, "content": "offline decision"}))
+    if fake_action not in {"accept", "refuse", "delegate", "complete", "wait"}:
+        raise typer.BadParameter("fake-action must be accept, refuse, delegate, complete, or wait")
+    if provider == "fake":
+        adapter = FakeLLMAdapter({"action": fake_action, "content": "offline decision"})
+    elif provider == "ollama":
+        adapter = OllamaAdapter(endpoint=endpoint or "http://localhost:11434/api/chat",
+                                model=model)
+    elif provider in {"openai", "openai-compatible"}:
+        adapter = OpenAICompatibleAdapter(
+            endpoint=endpoint or "http://localhost:11434/v1/chat/completions",
+            model=model, api_key_env=api_key_env)
+    else:
+        raise typer.BadParameter("provider must be fake, ollama, or openai-compatible")
     result = __import__("swarmguard.engine", fromlist=["run_m4_scenario"]).run_m4_scenario(
         scenario, store=Store(db), mode=mode,
         policy_factory=lambda: LLMPolicy(adapter, temperature=temperature, seed=seed))
-    print(json.dumps({"scenario": scenario, "model": model,
+    print(json.dumps({"scenario": scenario, "provider": provider, "model": model,
                       "result": str(result.get("ground_truth", {}))}, indent=2))
 
 @app.command()
@@ -91,6 +104,11 @@ def experiment_run(scenario: str = typer.Option("delegation_laundering", "--scen
                    seed: int = typer.Option(0, "--seed"),
                    output: str = typer.Option("experiment", "--output"),
                    engine: str = typer.Option("legacy", "--engine"),
+                   agent_policy: str = typer.Option("deterministic", "--agent-policy"),
+                   provider: str = typer.Option("fake", "--provider"),
+                   model: str = typer.Option("llama3.2", "--model"),
+                   endpoint: str | None = typer.Option(None, "--endpoint"),
+                   temperature: float = typer.Option(0.0, "--temperature"),
                    suite: str | None = typer.Option(None, "--suite",
                                                      help="core runs all M4 interaction scenarios")):
     """Run interaction-engine scenarios and persist all experiment artifacts."""
@@ -104,7 +122,12 @@ def experiment_run(scenario: str = typer.Option("delegation_laundering", "--scen
         raise typer.BadParameter("unknown interaction scenario")
     if engine == "interaction" and suite is None:
         suite = None
-    result = experiment(scenario, trials, seed, output, suite=suite)
+    if agent_policy not in {"deterministic", "llm"}:
+        raise typer.BadParameter("agent-policy must be deterministic or llm")
+    result = experiment(scenario, trials, seed, output, suite=suite,
+                        config={"agent_policy": agent_policy, "provider": provider,
+                                "model": model, "endpoint": endpoint,
+                                "temperature": temperature})
     print(json.dumps({"experiment_id": result.get("experiment_id"),
                       "conditions": list(result["aggregate"]),
                       "trials": len(result["trials"]), "output": output}, indent=2))

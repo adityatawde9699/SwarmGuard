@@ -130,8 +130,10 @@ def _m4_experiment(scenarios: list[str], trials: int, seed: int,
                 state = ExperimentState(id=run_id, status="running")
                 store.save_experiment_state(state)
                 try:
+                    policy_factory = _llm_policy_factory(config, trial_seed)
                     result = run_m4_scenario(name, store=store, mode=spec["mode"],
-                                             run_id=run_id)
+                                             run_id=run_id,
+                                             policy_factory=policy_factory)
                     truth = result["ground_truth"]
                     events = result["events"]
                     history = result.get("detection_history", [])
@@ -168,6 +170,15 @@ def _m4_experiment(scenarios: list[str], trials: int, seed: int,
                         "unnecessary_intervention": float(intervened and not attack),
                         "overhead_ms": (time.perf_counter() - started) * 1000,
                     }
+                    decision_rows = store.con.execute(
+                        "SELECT metadata_json FROM decisions").fetchall()
+                    metadata = [json.loads(row[0] or "{}") for row in decision_rows]
+                    metrics["failed_model_requests"] = float(sum(
+                        1 for item in metadata if item.get("response_validation") == "failed"))
+                    latencies = [float(item["latency_ms"]) for item in metadata
+                                 if isinstance(item.get("latency_ms"), (int, float))]
+                    metrics["model_latency_ms"] = (
+                        sum(latencies) / len(latencies) if latencies else None)
                     # Rate aliases keep the M3 report vocabulary compatible
                     # while the count-like names remain useful per trial.
                     for metric in ("attack_attempt", "detection", "intervention",
@@ -202,6 +213,8 @@ def _m4_experiment(scenarios: list[str], trials: int, seed: int,
                         "ground_truth": truth, "detection_history": history,
                         "findings": [f.model_dump() for f in result["findings"]],
                         "interventions": interventions,
+                        "model_failures": metrics["failed_model_requests"],
+                        "model_latency_ms": metrics["model_latency_ms"],
                     })
                 except Exception as exc:
                     state.status, state.error = "failed", str(exc)
@@ -228,6 +241,7 @@ def _m4_experiment(scenarios: list[str], trials: int, seed: int,
     metric_names = ("attack_attempt", "detection", "intervention", "successful_violation",
                     "prevention", "benign_success", "false_positive",
                     "unnecessary_intervention", "overhead_ms",
+                    "failed_model_requests", "model_latency_ms",
                     "attack_attempt_rate", "detection_rate", "intervention_rate",
                     "successful_violation_rate", "prevention_rate",
                     "benign_success_rate", "false_positive_rate",
@@ -257,6 +271,38 @@ def _m4_experiment(scenarios: list[str], trials: int, seed: int,
     (out.with_suffix(".aggregate.json")).write_text(json.dumps(result, indent=2), encoding="utf-8")
     _write_chart(out.with_suffix(".svg"), aggregate)
     return result
+
+
+def _llm_policy_factory(config: dict | None, seed: int):
+    """Build per-agent policies only when an LLM condition is requested."""
+    settings = config or {}
+    if settings.get("agent_policy", "deterministic") != "llm":
+        return None
+    from .llm import FakeLLMAdapter, LLMPolicy, OllamaAdapter, OpenAICompatibleAdapter
+    provider = settings.get("provider", "fake")
+    model = settings.get("model", "llama3.2")
+    endpoint = settings.get("endpoint")
+    temperature = float(settings.get("temperature", 0.0))
+
+    def factory(agent_id: str):
+        if provider == "fake":
+            response = settings.get("fake_response", {
+                "action": settings.get("fake_action", "complete"),
+                "content": "offline decision",
+            })
+            adapter = FakeLLMAdapter(response=response)
+        elif provider == "ollama":
+            adapter = OllamaAdapter(endpoint=endpoint or "http://localhost:11434/api/chat",
+                                    model=model, timeout=float(settings.get("timeout", 30)))
+        elif provider in {"openai", "openai-compatible"}:
+            adapter = OpenAICompatibleAdapter(
+                endpoint=endpoint or "http://localhost:11434/v1/chat/completions",
+                model=model, timeout=float(settings.get("timeout", 30)),
+                api_key_env=settings.get("api_key_env"))
+        else:
+            raise ValueError(f"unknown LLM provider: {provider}")
+        return LLMPolicy(adapter, temperature=temperature, seed=seed)
+    return factory
 
 def _write_chart(path: Path, aggregates: dict) -> None:
     metrics = ["recall", "precision", "fpr", "prevention", "benign_success", "overhead_ms"]

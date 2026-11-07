@@ -113,8 +113,8 @@ component and never consumes monitor findings.
 
 ## M5 local LLM policies
 
-M5 adds an opt-in `LLMPolicy` without changing deterministic policies or the
-M4 `GroupPolicyGate`/independent evaluator. Policies return a Pydantic-validated
+M5.1 hardens the opt-in `LLMPolicy` without changing deterministic policies or
+the M4 `GroupPolicyGate`/independent evaluator. Policies return a Pydantic-validated
 `PolicyDecision` (`accept`, `refuse`, `delegate`, `complete`, or `wait`).
 Prompts contain only the agent's `TaskContext` and local messages; the global
 objective is never sent to an adapter. Provider/model, temperature, seed,
@@ -139,3 +139,24 @@ M5 makes no claims about model capability or safety. Use `enforce` for
 protected runs, keep endpoint access local, and retain configuration and
 artifacts for reproducibility. Network access is optional and no paid provider
 dependency is required.
+
+The hardened adapters are `OllamaAdapter` (`/api/chat`, non-streaming),
+`OpenAICompatibleAdapter` (`/v1/chat/completions`), and the offline
+`FakeLLMAdapter`. Fake responses can be configured per agent/task and as
+sequences for deterministic tests. Model-generated delegation is checked for
+known, authorized targets before task creation and then passes through the
+group gate. Technical model failures are recorded as failed policy requests
+and are not counted as safety refusals.
+
+The interaction experiment runner accepts the same scenarios for deterministic
+and fake/local policies:
+
+```bash
+uv run swarmguard experiment-run --engine interaction \
+  --agent-policy llm --provider fake --suite core --trials 10 --seed 42 \
+  --output artifacts/m5-fake
+```
+
+Use `--provider ollama` with `--endpoint` for a local model. A local model
+server is optional; ordinary tests use mocked HTTP responses and do not
+require network access.

@@ -38,17 +38,19 @@ class AgentPolicy(BaseModel):
     delegation_targets: list[str] = Field(default_factory=list)
 
     def decide(self, agent: "Agent", task: "Task", context: "TaskContext | Objective | None" = None,
-               objective: Objective | None = None) -> AgentAction:
+               objective: Objective | None = None) -> PolicyDecision:
         # Policies consume only the agent's local view.  The Objective argument
         # is retained for M1-M4 callers, but is no longer consulted when a
         # TaskContext is supplied.
         prohibited = (context.known_prohibited if isinstance(context, TaskContext)
                       else bool(getattr(context, "prohibited", False)))
         if prohibited and self.refuse_prohibited:
-            return "refuse"
+            return PolicyDecision(action="refuse", reason="Local policy prohibits this task")
         if self.delegation_targets:
-            return "delegate"
-        return "complete"
+            return PolicyDecision(action="delegate",
+                                  target=self.delegation_targets[0],
+                                  delegation_targets=list(self.delegation_targets))
+        return PolicyDecision(action="complete")
 
 
 class AgentState(BaseModel):
@@ -60,15 +62,20 @@ class AgentState(BaseModel):
 class Agent(BaseModel):
     id: str
     name: str | None = None
-    # Kept permissive so third-party/LLM policies can implement the same
-    # decide protocol without becoming a required dependency.
-    policy: Any = Field(default_factory=AgentPolicy)
+    # Policies are runtime objects (deterministic or provider-backed).  The
+    # execution boundary normalizes their return value before acting on it.
+    policy: object = Field(default_factory=AgentPolicy)
     state: AgentState = Field(default_factory=AgentState)
     capabilities: set[str] = Field(default_factory=set)
 
     def decide(self, task: "Task", objective: Objective | None = None,
-               context: "TaskContext | None" = None) -> AgentAction | PolicyDecision:
-        return self.policy.decide(self, task, context or objective)
+               context: "TaskContext | None" = None) -> PolicyDecision:
+        raw = self.policy.decide(self, task, context or objective)
+        if isinstance(raw, PolicyDecision):
+            return raw
+        if isinstance(raw, str) and raw in {"accept", "refuse", "delegate", "complete", "wait"}:
+            return PolicyDecision(action=raw)
+        raise TypeError("agent policy must return PolicyDecision or a supported action")
 
 
 class TaskContext(BaseModel):
