@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.vscode/
+
+*.db
+*.db-*
+*.json
+*.csv
+*.svg
+
+!pyproject.toml
+!uv.lock
+!README.md
+!docs/**/*.json

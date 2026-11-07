@@ -1,0 +1,21 @@
+[project]
+name = "swarmguard"
+version = "0.1.0"
+description = "Deterministic research MVP for monitoring multi-agent workflows"
+requires-python = ">=3.12"
+dependencies = [
+  "pydantic>=2.7",
+  "networkx>=3.3",
+  "typer>=0.12",
+  "rich>=13.7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+swarmguard = "swarmguard.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
