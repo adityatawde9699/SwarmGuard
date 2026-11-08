@@ -209,6 +209,8 @@ def _m4_experiment(scenarios: list[str], trials: int, seed: int,
                         str(item["model_revision"]) for item in metadata
                         if item.get("model_revision")
                     })
+                    trial_manifest = _trial_manifest(result, store, run_id, trial_seed)
+                    store.save_trial_manifest(run_id, trial_manifest)
                     # Rate aliases keep the M3 report vocabulary compatible
                     # while the count-like names remain useful per trial.
                     for metric in ("attack_attempt", "detection", "intervention",
@@ -246,6 +248,7 @@ def _m4_experiment(scenarios: list[str], trials: int, seed: int,
                         "model_failures": metrics["failed_model_requests"],
                         "model_latency_ms": metrics["model_latency_ms"],
                         "model_revisions": model_revisions,
+                        "trial_manifest": trial_manifest,
                     })
                 except Exception as exc:
                     state.status, state.error = "failed", str(exc)
@@ -313,6 +316,60 @@ def _m4_experiment(scenarios: list[str], trials: int, seed: int,
     (out.with_suffix(".aggregate.json")).write_text(json.dumps(result, indent=2), encoding="utf-8")
     _write_chart(out.with_suffix(".svg"), aggregate)
     return result
+
+
+def _trial_manifest(result: dict, store: Store, run_id: str,
+                    trial_seed: int) -> dict:
+    """Build an auditable causal manifest without exposing raw prompts."""
+    agents = result.get("agents", {})
+    tasks = result.get("tasks", {})
+    decisions = store.con.execute(
+        "SELECT task_id, agent_id, action, metadata_json FROM decisions ORDER BY id"
+    ).fetchall()
+    interactions = store.interactions(run_id)
+    events = result.get("events", [])
+    return {
+        "run_id": run_id,
+        "trial_seed": trial_seed,
+        "agents": [
+            {"id": agent_id, "role": agent.role or agent.name or agent_id,
+             "capabilities": sorted(agent.capabilities)}
+            for agent_id, agent in agents.items()
+        ],
+        "tasks": [
+            {"id": task.id, "title": task.title, "creator_id": task.creator_id,
+             "assignee_id": task.assignee_id, "parent_task_id": task.parent_task_id,
+             "status": task.status, "children": list(task.children)}
+            for task in tasks.values()
+        ],
+        "decisions": [
+            {"task_id": row["task_id"], "agent_id": row["agent_id"],
+             "action": row["action"], **json.loads(row["metadata_json"] or "{}")}
+            for row in decisions
+        ],
+        "interactions": interactions,
+        "attempted_actions": [
+            {"event_id": event.id, "agent_id": event.agent_id,
+             "task_id": event.task_id, "kind": event.kind,
+             "boundary": event.metadata.get("boundary_action"),
+             "attempted": event.metadata.get("attempted", True),
+             "completed": event.metadata.get("completed", event.kind != "intervention")}
+            for event in events
+            if event.metadata.get("boundary_action") or event.kind in {"tool", "delegation"}
+        ],
+        "outcomes": {
+            "prohibited": bool(result["ground_truth"].get("prohibited")),
+            "violation": bool(result["ground_truth"].get("violation")),
+            "completed": bool(result["ground_truth"].get("completed")),
+            "technical_failures": sum(
+                1 for row in decisions
+                if json.loads(row["metadata_json"] or "{}").get("response_validation") == "failed"
+            ),
+            "policy_interventions": sum(
+                1 for item in interactions if not item["allowed"]
+            ),
+        },
+    }
 
 
 def _llm_policy_factory(config: dict | None, seed: int):

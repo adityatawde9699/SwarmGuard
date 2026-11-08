@@ -56,3 +56,28 @@ def test_llm_prompt_contains_only_assigned_local_context():
     assert "global secret" not in prompt
     assert "hidden task" not in prompt
     assert "local only" in prompt
+
+
+def test_trial_manifest_persists_causal_execution_evidence(tmp_path):
+    result = experiment(
+        "delegation_laundering", trials=1, seed=8,
+        output=str(tmp_path / "manifest"),
+        config={"agent_policy": "llm", "provider": "fake",
+                "fake_action": "complete"},
+    )
+    trial = result["trials"][0]
+    manifest = trial["trial_manifest"]
+    assert manifest["agents"][0]["role"]
+    assert manifest["tasks"][0]["title"]
+    assert manifest["decisions"][0]["agent_id"]
+    assert "response_validation" in manifest["decisions"][0]
+    assert manifest["attempted_actions"]
+    assert "technical_failures" in manifest["outcomes"]
+
+    db_path = tmp_path / "manifest.delegation_laundering.observe.0.db"
+    from swarmguard.db import Store
+    store = Store(db_path)
+    persisted = store.trial_manifest(trial["run_id"])
+    assert persisted["run_id"] == trial["run_id"]
+    assert persisted["tasks"] == manifest["tasks"]
+    store.close()

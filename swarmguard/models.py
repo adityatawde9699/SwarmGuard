@@ -62,6 +62,7 @@ class AgentState(BaseModel):
 class Agent(BaseModel):
     id: str
     name: str | None = None
+    role: str | None = None
     # Policies are runtime objects (deterministic or provider-backed).  The
     # execution boundary normalizes their return value before acting on it.
     policy: object = Field(default_factory=AgentPolicy)

@@ -40,6 +40,9 @@ CREATE TABLE IF NOT EXISTS results (
  id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, payload TEXT NOT NULL,
  created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS trial_manifests (
+ run_id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS interactions (
  interaction_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, agent_id TEXT,
  task_id TEXT, action TEXT NOT NULL, mode TEXT NOT NULL, allowed INTEGER NOT NULL,
@@ -188,6 +191,20 @@ class Store:
         self.con.execute("INSERT INTO results(task_id,payload,created_at) VALUES(?,?,datetime('now'))",
                          (task_id, payload))
         self.con.commit()
+
+    def save_trial_manifest(self, run_id: str, manifest: dict) -> None:
+        self.con.execute(
+            "INSERT OR REPLACE INTO trial_manifests(run_id,payload,created_at) "
+            "VALUES(?,?,datetime('now'))",
+            (run_id, json.dumps(manifest, sort_keys=True)),
+        )
+        self.con.commit()
+
+    def trial_manifest(self, run_id: str) -> dict | None:
+        row = self.con.execute(
+            "SELECT payload FROM trial_manifests WHERE run_id=?", (run_id,)
+        ).fetchone()
+        return json.loads(row["payload"]) if row else None
 
     def interaction_provenance(self) -> dict:
         """Return the durable Objective→Task→Message→Decision→Result chain."""

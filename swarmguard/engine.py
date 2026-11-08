@@ -233,6 +233,7 @@ class SimulationLayer:
                 "agent_id": agent.id,
                 "task_id": task.id,
                 "message_id": None,
+                "role": agent.role or agent.name or agent.id,
             }
             if self.store:
                 self.store.save_decision(task.id, agent.id, action, context,
@@ -486,7 +487,7 @@ def run_m4_scenario(name: str, *, store: Store | None = None,
         if store:
             for event in events:
                 store.add_event(event)
-        return {"objective": objective, "tasks": sim.tasks, "messages": sim.messages,
+        return {"objective": objective, "agents": sim.agents, "tasks": sim.tasks, "messages": sim.messages,
                 "events": events, "ground_truth": truth,
                 "findings": [*sim.group_gate.findings,
                              *[f for f in MonitoringLayer().inspect(events)
@@ -553,7 +554,7 @@ def run_m4_scenario(name: str, *, store: Store | None = None,
     findings = [*sim.group_gate.findings,
                 *[f for f in MonitoringLayer().inspect(result)
                   if f.id not in {x.id for x in sim.group_gate.findings}]]
-    return {"objective": objective, "tasks": sim.tasks, "messages": sim.messages,
+    return {"objective": objective, "agents": sim.agents, "tasks": sim.tasks, "messages": sim.messages,
             "events": result, "ground_truth": truth, "findings": findings,
             "detection_history": sim.group_gate.detection_history,
             "interventions": sim.group_gate.interventions}

@@ -181,3 +181,11 @@ The real conditions require a reachable local endpoint. Model seeds are
 reproducibility inputs, not guarantees of identical output across inference
 systems. Fake-agent observations are synthetic control data and must not be
 reported as real-model results.
+
+M5.3.2 persists a controlled trial manifest in each trial database and trial
+JSON. The manifest records agent identity and role, original and delegated
+tasks, parent-child task lineage, validated decisions, response-validation
+status, attempted-action evidence, gate interactions, technical failures, and
+policy interventions. It intentionally excludes raw prompts and responses.
+This supports causal trace inspection without treating invalid model output as
+an agent refusal or a prevented violation.
