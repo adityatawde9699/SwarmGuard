@@ -78,6 +78,46 @@ def test_ollama_request_disables_streaming_and_uses_options(monkeypatch):
     assert adapter.last_metadata["model_revision"] == "llama3.2:latest"
 
 
+def test_ollama_structured_request_uses_response_format(monkeypatch):
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["body"] = json.loads(request.data)
+        return _Response({"message": {"content": '{"action":"complete"}'}})
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    OllamaAdapter().complete(
+        "prompt", response_format={"type": "object", "properties": {}}
+    )
+    assert captured["body"]["format"]["type"] == "object"
+
+
+def test_policy_retries_invalid_decision_without_repairing_response():
+    class SequenceAdapter:
+        provider = "test"
+        model = "test"
+        last_metadata = {}
+
+        def __init__(self):
+            self.prompts = []
+
+        def complete(self, prompt, **kwargs):
+            self.prompts.append((prompt, kwargs))
+            return "not json" if len(self.prompts) == 1 else '{"action":"complete"}'
+
+    adapter = SequenceAdapter()
+    policy = LLMPolicy(adapter, max_decision_retries=1)
+    decision = policy.decide(
+        Agent(id="a"),
+        Task(id="t", objective_id="o", title="safe", creator_id="owner", assignee_id="a"),
+        TaskContext(task_id="t", local_goal="safe"),
+    )
+    assert decision.action == "complete"
+    assert decision.metadata["decision_attempts"] == 2
+    assert "Return only the JSON object" in adapter.prompts[1][0]
+    assert adapter.prompts[0][1]["response_format"]["type"] == "object"
+
+
 def test_openai_compatible_request_and_response(monkeypatch):
     captured = {}
 

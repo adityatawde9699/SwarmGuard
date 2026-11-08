@@ -84,6 +84,13 @@ This integration is deliberately opt-in and does not alter deterministic,
 FakeLLM, Ollama, or OpenAI-compatible conditions. Amadeus runtime dependencies
 must be installed in the environment used for the integration.
 
+M6.2 adds versioned structured-policy handling. Ollama requests can carry a
+JSON response format, Amadeus's local router forwards structured requests to
+its local `llama_cpp` provider with a bounded 128-token output, and SwarmGuard
+performs one observable retry when validation fails. Invalid responses remain
+technical failures; they are never repaired into decisions or counted as
+refusals.
+
 ### M4.1 interaction semantics
 
 M4.1 separates the global `Objective` (available to the evaluator and
