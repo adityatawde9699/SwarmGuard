@@ -41,7 +41,9 @@ def llm_run(scenario: str = typer.Option("legitimate_task_decomposition", "--sce
             temperature: float = typer.Option(0.0, "--temperature"),
             seed: int | None = typer.Option(0, "--seed"),
             fake_action: str = typer.Option("complete", "--fake-action"),
-            api_key_env: str | None = typer.Option(None, "--api-key-env")):
+            api_key_env: str | None = typer.Option(None, "--api-key-env"),
+            manifest: str | None = typer.Option(None, "--manifest",
+                                                help="JSON fake-agent decision manifest")):
     """Run an opt-in LLM policy; fake is the offline default."""
     from .llm import (FakeLLMAdapter, LLMPolicy, OllamaAdapter,
                       OpenAICompatibleAdapter)
@@ -52,7 +54,11 @@ def llm_run(scenario: str = typer.Option("legitimate_task_decomposition", "--sce
     if fake_action not in {"accept", "refuse", "delegate", "complete", "wait"}:
         raise typer.BadParameter("fake-action must be accept, refuse, delegate, complete, or wait")
     if provider == "fake":
-        adapter = FakeLLMAdapter({"action": fake_action, "content": "offline decision"})
+        manifest_data = (json.loads(open(manifest, encoding="utf-8").read())
+                         if manifest else {})
+        adapter = FakeLLMAdapter(
+            {"action": fake_action, "content": "offline decision"},
+            manifest=manifest_data)
     elif provider == "ollama":
         adapter = OllamaAdapter(endpoint=endpoint or "http://localhost:11434/api/chat",
                                 model=model)
@@ -105,10 +111,16 @@ def experiment_run(scenario: str = typer.Option("delegation_laundering", "--scen
                    output: str = typer.Option("experiment", "--output"),
                    engine: str = typer.Option("legacy", "--engine"),
                    agent_policy: str = typer.Option("deterministic", "--agent-policy"),
+                   condition_set: str | None = typer.Option(None, "--condition-set",
+                                                            help="Use m52 for deterministic/fake/real comparison"),
                    provider: str = typer.Option("fake", "--provider"),
                    model: str = typer.Option("llama3.2", "--model"),
                    endpoint: str | None = typer.Option(None, "--endpoint"),
                    temperature: float = typer.Option(0.0, "--temperature"),
+                   agent_config: str | None = typer.Option(None, "--agent-config",
+                                                            help="JSON per-agent provider configuration"),
+                   fake_manifest: str | None = typer.Option(None, "--fake-manifest",
+                                                            help="JSON fake-agent decision manifest"),
                    suite: str | None = typer.Option(None, "--suite",
                                                      help="core runs all M4 interaction scenarios")):
     """Run interaction-engine scenarios and persist all experiment artifacts."""
@@ -124,10 +136,15 @@ def experiment_run(scenario: str = typer.Option("delegation_laundering", "--scen
         suite = None
     if agent_policy not in {"deterministic", "llm"}:
         raise typer.BadParameter("agent-policy must be deterministic or llm")
-    result = experiment(scenario, trials, seed, output, suite=suite,
-                        config={"agent_policy": agent_policy, "provider": provider,
+    config = {"agent_policy": agent_policy, "condition_set": condition_set,
+              "provider": provider,
                                 "model": model, "endpoint": endpoint,
-                                "temperature": temperature})
+                                "temperature": temperature}
+    if agent_config:
+        config["agents"] = json.loads(open(agent_config, encoding="utf-8").read())
+    if fake_manifest:
+        config["fake_manifest"] = json.loads(open(fake_manifest, encoding="utf-8").read())
+    result = experiment(scenario, trials, seed, output, suite=suite, config=config)
     print(json.dumps({"experiment_id": result.get("experiment_id"),
                       "conditions": list(result["aggregate"]),
                       "trials": len(result["trials"]), "output": output}, indent=2))

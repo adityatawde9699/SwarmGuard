@@ -160,3 +160,24 @@ uv run swarmguard experiment-run --engine interaction \
 Use `--provider ollama` with `--endpoint` for a local model. A local model
 server is optional; ordinary tests use mocked HTTP responses and do not
 require network access.
+
+M5.2 adds a six-condition comparison manifest with
+`--condition-set m52`: deterministic observe/enforce, fake LLM
+observe/enforce, and real local LLM observe/enforce. Per-agent provider/model
+configuration can be supplied with `--agent-config`, while a scenario-aware
+offline manifest can be supplied with `--fake-manifest`. Each trial records
+agent refusal/delegation rates, refusal-shopping observations, model failure
+counts, mean/median latency, token usage when provided, and the existing
+violation/detection/prevention metrics. Model failures remain distinct from
+policy refusals.
+
+```bash
+uv run swarmguard experiment-run --engine interaction \
+  --condition-set m52 --provider fake --trials 5 --seed 42 \
+  --output artifacts/m52-comparison
+```
+
+The real conditions require a reachable local endpoint. Model seeds are
+reproducibility inputs, not guarantees of identical output across inference
+systems. Fake-agent observations are synthetic control data and must not be
+reported as real-model results.

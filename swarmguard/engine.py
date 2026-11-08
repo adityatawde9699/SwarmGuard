@@ -226,6 +226,14 @@ class SimulationLayer:
                               "error": f"{type(exc).__name__}: {exc}"})
             action = decision.action if isinstance(decision, PolicyDecision) else decision
             decision_metadata = decision.metadata if isinstance(decision, PolicyDecision) else {}
+            decision_metadata = {
+                **decision_metadata,
+                "experiment_id": self.run_id,
+                "trial_id": self.run_id,
+                "agent_id": agent.id,
+                "task_id": task.id,
+                "message_id": None,
+            }
             if self.store:
                 self.store.save_decision(task.id, agent.id, action, context,
                                          metadata=decision_metadata)

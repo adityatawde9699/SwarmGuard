@@ -1,5 +1,5 @@
 """Repeatable M2 experiment runner (stdlib only)."""
-import csv, json, random, math, time
+import csv, json, random, math, time, copy
 from pathlib import Path
 from .scenarios import SCENARIOS
 from .sim import run
@@ -30,6 +30,14 @@ M4_SCENARIOS = {
 M4_CONDITIONS = {
     "observe": {"name": "M4.2 observe", "mode": "observe"},
     "enforce": {"name": "M4.2 enforce", "mode": "enforce"},
+}
+M52_CONDITIONS = {
+    "A": {"name": "deterministic observe", "mode": "observe", "agent_policy": "deterministic"},
+    "B": {"name": "deterministic enforce", "mode": "enforce", "agent_policy": "deterministic"},
+    "C": {"name": "fake LLM observe", "mode": "observe", "agent_policy": "llm", "provider": "fake"},
+    "D": {"name": "fake LLM enforce", "mode": "enforce", "agent_policy": "llm", "provider": "fake"},
+    "E": {"name": "real LLM observe", "mode": "observe", "agent_policy": "llm", "provider": "ollama"},
+    "F": {"name": "real LLM enforce", "mode": "enforce", "agent_policy": "llm", "provider": "ollama"},
 }
 CORE_SUITE = sorted(M4_SCENARIOS)
 
@@ -105,7 +113,9 @@ def _m4_experiment(scenarios: list[str], trials: int, seed: int,
                    output: str, config: dict | None) -> dict:
     """Run real interaction-engine scenarios, rather than scripted events."""
     experiment_id = (config or {}).get("experiment_id", f"m4-{int(time.time() * 1000)}")
-    selected = (config or {}).get("conditions", M4_CONDITIONS)
+    settings = config or {}
+    default_conditions = M52_CONDITIONS if settings.get("condition_set") == "m52" else M4_CONDITIONS
+    selected = settings.get("conditions", default_conditions)
     if isinstance(selected, list):
         selected = {name: M4_CONDITIONS[name] for name in selected}
     out = Path(output); out.parent.mkdir(parents=True, exist_ok=True)
@@ -130,7 +140,8 @@ def _m4_experiment(scenarios: list[str], trials: int, seed: int,
                 state = ExperimentState(id=run_id, status="running")
                 store.save_experiment_state(state)
                 try:
-                    policy_factory = _llm_policy_factory(config, trial_seed)
+                    condition_config = {**settings, **spec}
+                    policy_factory = _llm_policy_factory(condition_config, trial_seed)
                     result = run_m4_scenario(name, store=store, mode=spec["mode"],
                                              run_id=run_id,
                                              policy_factory=policy_factory)
@@ -179,6 +190,21 @@ def _m4_experiment(scenarios: list[str], trials: int, seed: int,
                                  if isinstance(item.get("latency_ms"), (int, float))]
                     metrics["model_latency_ms"] = (
                         sum(latencies) / len(latencies) if latencies else None)
+                    actions = [row[0] for row in store.con.execute(
+                        "SELECT action FROM decisions").fetchall()]
+                    decision_count = len(actions)
+                    metrics["agent_refusal_rate"] = (
+                        actions.count("refuse") / decision_count if decision_count else None)
+                    metrics["delegation_frequency"] = (
+                        actions.count("delegate") / decision_count if decision_count else None)
+                    metrics["refusal_shopping_rate"] = float(any(
+                        f.get("detector") == "refusal_shopping"
+                        for f in [item for h in history for item in h.get("findings", [])]))
+                    metrics["model_latency_median_ms"] = (
+                        sorted(latencies)[len(latencies) // 2] if latencies else None)
+                    metrics["token_usage"] = float(sum(
+                        item.get("token_usage", 0) for item in metadata
+                        if isinstance(item.get("token_usage", 0), (int, float))))
                     # Rate aliases keep the M3 report vocabulary compatible
                     # while the count-like names remain useful per trial.
                     for metric in ("attack_attempt", "detection", "intervention",
@@ -242,6 +268,9 @@ def _m4_experiment(scenarios: list[str], trials: int, seed: int,
                     "prevention", "benign_success", "false_positive",
                     "unnecessary_intervention", "overhead_ms",
                     "failed_model_requests", "model_latency_ms",
+                    "agent_refusal_rate", "delegation_frequency",
+                    "refusal_shopping_rate", "model_latency_median_ms",
+                    "token_usage",
                     "attack_attempt_rate", "detection_rate", "intervention_rate",
                     "successful_violation_rate", "prevention_rate",
                     "benign_success_rate", "false_positive_rate",
@@ -260,7 +289,15 @@ def _m4_experiment(scenarios: list[str], trials: int, seed: int,
                 continue
             average = sum(vals) / len(vals)
             aggregate[condition][metric] = average
-            if metric != "overhead_ms":
+            if metric in {
+                "attack_attempt", "detection", "intervention",
+                "successful_violation", "prevention", "benign_success",
+                "false_positive", "unnecessary_intervention",
+                "attack_attempt_rate", "detection_rate",
+                "intervention_rate", "successful_violation_rate",
+                "prevention_rate", "benign_success_rate",
+                "false_positive_rate", "unnecessary_intervention_rate",
+            }:
                 n, p, z = len(vals), average, 1.96
                 den = 1 + z*z/n
                 center = (p + z*z/(2*n))/den
@@ -283,25 +320,33 @@ def _llm_policy_factory(config: dict | None, seed: int):
     model = settings.get("model", "llama3.2")
     endpoint = settings.get("endpoint")
     temperature = float(settings.get("temperature", 0.0))
+    agent_configs = settings.get("agents", {})
+    manifest = settings.get("fake_manifest", {})
 
     def factory(agent_id: str):
-        if provider == "fake":
-            response = settings.get("fake_response", {
-                "action": settings.get("fake_action", "complete"),
+        agent_settings = {**settings, **agent_configs.get(agent_id, {})}
+        agent_provider = agent_settings.get("provider", provider)
+        agent_model = agent_settings.get("model", model)
+        agent_endpoint = agent_settings.get("endpoint", endpoint)
+        agent_temperature = float(agent_settings.get("temperature", temperature))
+        if agent_provider == "fake":
+            response = agent_settings.get("fake_response", {
+                "action": agent_settings.get("fake_action", "complete"),
                 "content": "offline decision",
             })
-            adapter = FakeLLMAdapter(response=response)
-        elif provider == "ollama":
-            adapter = OllamaAdapter(endpoint=endpoint or "http://localhost:11434/api/chat",
-                                    model=model, timeout=float(settings.get("timeout", 30)))
-        elif provider in {"openai", "openai-compatible"}:
+            adapter = FakeLLMAdapter(response=response, manifest=copy.deepcopy(manifest))
+        elif agent_provider == "ollama":
+            adapter = OllamaAdapter(endpoint=agent_endpoint or "http://localhost:11434/api/chat",
+                                    model=agent_model, timeout=float(agent_settings.get("timeout", 30)))
+        elif agent_provider in {"openai", "openai-compatible"}:
             adapter = OpenAICompatibleAdapter(
-                endpoint=endpoint or "http://localhost:11434/v1/chat/completions",
-                model=model, timeout=float(settings.get("timeout", 30)),
-                api_key_env=settings.get("api_key_env"))
+                endpoint=agent_endpoint or "http://localhost:11434/v1/chat/completions",
+                model=agent_model, timeout=float(agent_settings.get("timeout", 30)),
+                api_key_env=agent_settings.get("api_key_env"))
         else:
-            raise ValueError(f"unknown LLM provider: {provider}")
-        return LLMPolicy(adapter, temperature=temperature, seed=seed)
+            raise ValueError(f"unknown LLM provider: {agent_provider}")
+        return LLMPolicy(adapter, temperature=agent_temperature, seed=seed,
+                         delegation_targets=agent_settings.get("delegation_targets"))
     return factory
 
 def _write_chart(path: Path, aggregates: dict) -> None:

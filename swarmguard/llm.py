@@ -133,6 +133,7 @@ class FakeLLMAdapter:
 
     response: str | dict[str, Any] | PolicyDecision | None = None
     responses: dict[tuple[str, str], list[str | dict[str, Any] | PolicyDecision]] = field(default_factory=dict)
+    manifest: dict[str, Any] = field(default_factory=dict)
     default_response: str | dict[str, Any] | PolicyDecision | None = None
     failures: int = 0
     provider: str = "fake"
@@ -152,6 +153,15 @@ class FakeLLMAdapter:
         except (ValueError, KeyError, TypeError, IndexError):
             key = ("", "")
         sequence = self.responses.get(key)
+        if sequence is None:
+            agent = self.manifest.get("agents", {}).get(key[0], {})
+            task_sequences = agent.get("tasks", {})
+            sequence = task_sequences.get(key[1]) or agent.get("decisions")
+            if isinstance(sequence, list) and sequence:
+                # Consume the configured sequence in place so repeated
+                # decisions are deterministic within one agent run.
+                value = sequence.pop(0)
+                return value
         if sequence:
             return sequence.pop(0)
         if self.response is not None:
@@ -207,6 +217,10 @@ class LLMPolicy:
                 if not isinstance(raw, dict):
                     raise ValueError("adapter response must be JSON object")
                 decision = PolicyDecision.model_validate(raw)
+            metadata["response_hash"] = hashlib.sha256(
+                json.dumps(raw.model_dump(mode="json") if isinstance(raw, PolicyDecision)
+                           else raw, sort_keys=True, default=str).encode()
+            ).hexdigest()
             if decision.action == "delegate" and not decision.target and self.delegation_targets:
                 decision.target = self.delegation_targets[0]
             metadata["response_validation"] = "valid"
@@ -214,10 +228,22 @@ class LLMPolicy:
             decision.metadata = {**decision.metadata, **metadata}
             return decision
         except Exception as exc:
+            error_text = str(exc).lower()
+            if "timeout" in error_text:
+                failure_classification = "timeout"
+            elif "rate" in error_text:
+                failure_classification = "rate_limit"
+            elif "json" in error_text or "validation" in error_text:
+                failure_classification = "invalid_response"
+            elif "authorization" in error_text or "unauthorized" in error_text:
+                failure_classification = "authorization"
+            else:
+                failure_classification = "request_failure"
             metadata.update({
                 "response_validation": "failed",
                 "latency_ms": round((time.perf_counter() - started) * 1000, 3),
                 "error": f"{type(exc).__name__}: {exc}",
+                "failure_classification": failure_classification,
             })
             return PolicyDecision(action="refuse", reason="Technical policy failure",
                                   metadata=metadata)
