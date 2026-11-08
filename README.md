@@ -197,3 +197,12 @@ intervals for binary outcomes, and the persisted configuration for every
 trial. Provider model digests are retained when the adapter supplies them;
 otherwise the report keeps the model identifier without inventing an
 immutable digest.
+
+M5.3.4 adds causal trace validation. Refusal events carry message links;
+delegations can reference a preceding refusal event; delegated tasks retain
+their parent task and receiving-agent decision; and action records distinguish
+proposed, authorized, executed, blocked, and completed states. Trial manifests
+are validated for missing parents, unknown owners, mismatched decision
+ownership, missing causal references, and contradictory blocked/completed or
+technical-failure/completed states. Ground truth continues to come from the
+objective and execution ledger rather than detector findings.

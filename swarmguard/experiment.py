@@ -393,7 +393,7 @@ def _trial_manifest(result: dict, store: Store, run_id: str,
     ).fetchall()
     interactions = store.interactions(run_id)
     events = result.get("events", [])
-    return {
+    manifest = {
         "run_id": run_id,
         "trial_seed": trial_seed,
         "agents": [
@@ -417,10 +417,14 @@ def _trial_manifest(result: dict, store: Store, run_id: str,
             {"event_id": event.id, "agent_id": event.agent_id,
              "task_id": event.task_id, "kind": event.kind,
              "boundary": event.metadata.get("boundary_action"),
+             "causal_parent_event_id": event.metadata.get("causal_parent_event_id"),
+             "message_id": event.message_id,
+             "action_status": event.metadata.get("action_status"),
              "attempted": event.metadata.get("attempted", True),
              "completed": event.metadata.get("completed", event.kind != "intervention")}
             for event in events
-            if event.metadata.get("boundary_action") or event.kind in {"tool", "delegation"}
+            if event.metadata.get("boundary_action")
+            or event.kind in {"tool", "delegation", "refusal"}
         ],
         "outcomes": {
             "prohibited": bool(result["ground_truth"].get("prohibited")),
@@ -435,6 +439,80 @@ def _trial_manifest(result: dict, store: Store, run_id: str,
             ),
         },
     }
+    manifest["action_lifecycle"] = _action_lifecycle(
+        manifest["decisions"], manifest["tasks"], manifest["interactions"],
+        manifest["attempted_actions"],
+    )
+    manifest["causal_validation"] = validate_trial_manifest(manifest)
+    return manifest
+
+
+def _action_lifecycle(decisions: list[dict], tasks: list[dict],
+                      interactions: list[dict], attempted: list[dict]) -> list[dict]:
+    """Classify proposals and side effects without consulting detector findings."""
+    interaction_by_task = {}
+    for interaction in interactions:
+        interaction_by_task.setdefault(interaction.get("task_id"), []).append(interaction)
+    events_by_task = {}
+    for event in attempted:
+        events_by_task.setdefault(event.get("task_id"), []).append(event)
+    lifecycle = []
+    for decision in decisions:
+        task_id = decision["task_id"]
+        action = decision["action"]
+        task_interactions = interaction_by_task.get(task_id, [])
+        task_events = events_by_task.get(task_id, [])
+        blocked = any(not item["allowed"] for item in task_interactions)
+        executed = any(item.get("completed") for item in task_interactions)
+        completed = any(item.get("action_status") == "completed"
+                        for item in task_events)
+        lifecycle.append({
+            "task_id": task_id, "agent_id": decision["agent_id"],
+            "proposed_action": action,
+            "authorized": bool(task_interactions) and not blocked,
+            "executed": executed or any(
+                item.get("kind") in {"delegation", "tool"} and item.get("attempted")
+                for item in task_events
+            ),
+            "blocked": blocked,
+            "completed": completed,
+            "technical_failure": decision.get("response_validation") == "failed",
+        })
+    return lifecycle
+
+
+def validate_trial_manifest(manifest: dict) -> dict:
+    """Validate causal references and reject fabricated execution lineage."""
+    agent_ids = {agent["id"] for agent in manifest.get("agents", [])}
+    task_map = {task["id"]: task for task in manifest.get("tasks", [])}
+    decision_tasks = {decision["task_id"] for decision in manifest.get("decisions", [])}
+    event_ids = {event["event_id"] for event in manifest.get("attempted_actions", [])}
+    errors = []
+    for task in task_map.values():
+        parent = task.get("parent_task_id")
+        if parent is not None and parent not in task_map:
+            errors.append(f"task {task['id']} references missing parent {parent}")
+        if task.get("creator_id") not in agent_ids and task.get("creator_id") != "owner":
+            errors.append(f"task {task['id']} has unknown creator")
+        assignee = task.get("assignee_id")
+        if assignee is not None and assignee not in agent_ids:
+            errors.append(f"task {task['id']} has unknown assignee")
+    for decision in manifest.get("decisions", []):
+        task = task_map.get(decision["task_id"])
+        if task is None:
+            errors.append(f"decision references missing task {decision['task_id']}")
+        elif task.get("assignee_id") != decision.get("agent_id"):
+            errors.append(f"decision agent does not own task {decision['task_id']}")
+    for event in manifest.get("attempted_actions", []):
+        causal = event.get("causal_parent_event_id")
+        if causal is not None and causal not in event_ids:
+            errors.append(f"event {event['event_id']} has missing causal parent")
+    for action in manifest.get("action_lifecycle", []):
+        if action["completed"] and action["blocked"]:
+            errors.append(f"action {action['task_id']} is both blocked and completed")
+        if action["technical_failure"] and action["completed"]:
+            errors.append(f"technical failure completed task {action['task_id']}")
+    return {"valid": not errors, "errors": errors}
 
 
 def _llm_policy_factory(config: dict | None, seed: int):

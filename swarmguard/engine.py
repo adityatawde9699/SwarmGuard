@@ -241,17 +241,39 @@ class SimulationLayer:
             if action == "refuse":
                 task.status = "refused"
                 event_kind = "response" if decision_metadata.get("response_validation") == "failed" else "refusal"
-                self._event(agent.id, task, event_kind,
+                refusal_event = self._event(agent.id, task, event_kind,
                             "Technical policy failure" if event_kind == "response"
                             else f"Refused: {task.title}",
                             metadata=decision_metadata)
-                self.send(Message(kind="refusal", sender_id=agent.id,
+                refusal_message = self.send(Message(kind="refusal", sender_id=agent.id,
                                   recipient_id=task.creator_id, task_id=task.id,
                                   content="Task refused by policy"))
+                refusal_event.message_id = refusal_message.id
+                refusal_event.metadata.update({
+                    "action_status": "executed",
+                    "decision_type": "technical_failure" if event_kind == "response"
+                    else "model_refusal",
+                })
                 if self.store:
                     self.store.save_result(task.id, {"status": task.status, "output": task.output})
             elif action == "delegate":
-                delegation_event = self._event(agent.id, task, "delegation", task.title)
+                prior_refusal = next(
+                    (event for event in reversed(self.events)
+                     if event.kind == "refusal" and event.task_id == task.id),
+                    None,
+                )
+                delegation_metadata = {
+                    "action_status": "proposed",
+                    "decision_type": "model_decision",
+                }
+                if prior_refusal:
+                    delegation_metadata.update({
+                        "causal_parent_event_id": prior_refusal.id,
+                        "causal_relation": "delegates_after_refusal",
+                    })
+                delegation_event = self._event(
+                    agent.id, task, "delegation", task.title,
+                    metadata=delegation_metadata)
                 targets = (decision.delegation_targets if decision.delegation_targets
                            else ([decision.target] if decision.target else
                                  getattr(agent.policy, "delegation_targets", [])))
@@ -266,6 +288,7 @@ class SimulationLayer:
                         "authorization": "rejected",
                         "invalid_targets": invalid,
                         "reason": "Delegation target is unknown or unauthorized",
+                        "action_status": "blocked",
                     })
                     task.status = "refused"
                     if self.store:
@@ -284,15 +307,18 @@ class SimulationLayer:
                     if self.store:
                         self.store.save_task(task)
                     continue
+                delegation_event.metadata["action_status"] = "authorized"
                 task.contribution_ids.append(delegation_event.id)
                 for target in targets:
                     child = Task(objective_id=task.objective_id, title=task.title,
                                  creator_id=agent.id, assignee_id=target,
                                  parent_task_id=task.id)
                     self.add_task(child); queue.append(child)
-                    self.send(Message(kind="delegation", sender_id=agent.id,
+                    delegation_message = self.send(Message(kind="delegation", sender_id=agent.id,
                                       recipient_id=target, task_id=child.id,
                                       content=child.title))
+                    delegation_event.message_id = delegation_message.id
+                delegation_event.metadata["action_status"] = "executed"
                 task.status = "completed" if targets else "failed"
                 task.output = f"Delegated to {', '.join(targets)}" if targets else None
                 if self.store:
@@ -306,7 +332,9 @@ class SimulationLayer:
                 task.output = (decision.content if isinstance(decision, PolicyDecision)
                                and decision.content else f"Completed by {agent.id}")
                 event = self._event(agent.id, task, "response", task.output)
+                event.metadata["action_status"] = "proposed"
                 if not self._boundary(event, "sensitive_result_delivery"):
+                    event.metadata["action_status"] = "blocked"
                     task.status = "refused"
                     if task.id in agent.state.active_task_ids:
                         agent.state.active_task_ids.remove(task.id)
@@ -315,10 +343,12 @@ class SimulationLayer:
                         self.store.save_task(task)
                     continue
                 task.status = "completed"
+                event.metadata["action_status"] = "completed"
                 task.contribution_ids.append(event.id)
-                self.send(Message(kind="result", sender_id=agent.id,
+                result_message = self.send(Message(kind="result", sender_id=agent.id,
                                   recipient_id=task.creator_id, task_id=task.id,
                                   content=task.output))
+                event.message_id = result_message.id
                 if self.store:
                     self.store.save_result(task.id, {"status": task.status, "output": task.output})
             agent.state.active_task_ids.remove(task.id)

@@ -1,7 +1,7 @@
 import json
 
 from swarmguard.engine import SimulationEngine
-from swarmguard.experiment import M52_CONDITIONS, experiment
+from swarmguard.experiment import M52_CONDITIONS, experiment, validate_trial_manifest
 from swarmguard.llm import FakeLLMAdapter, LLMPolicy
 from swarmguard.models import Agent, Objective, Task, TaskContext
 
@@ -98,3 +98,48 @@ def test_repeated_reporting_preserves_trial_traceability_and_intervals(tmp_path)
     assert stats["denominator"] == 3
     assert stats["ci95"] is not None
     assert all(row["configuration"] for row in result["trials"])
+
+
+def test_causal_manifest_links_refusal_delegation_and_receiver():
+    result = experiment(
+        "delegation_laundering", trials=1, seed=13,
+        output="/tmp/m534-causal",
+        config={"agent_policy": "deterministic"},
+    )
+    manifest = result["trials"][0]["trial_manifest"]
+    assert manifest["causal_validation"]["valid"]
+    delegation = next(item for item in manifest["attempted_actions"]
+                      if item["kind"] == "delegation")
+    assert delegation["causal_parent_event_id"]
+    assert any(decision["task_id"] in {
+        task["id"] for task in manifest["tasks"]
+        if task["parent_task_id"] == delegation["task_id"]
+    } for decision in manifest["decisions"])
+    assert any(item["proposed_action"] == "delegate"
+               and item["executed"] for item in manifest["action_lifecycle"])
+
+
+def test_manifest_validator_rejects_missing_and_contradictory_lineage():
+    base = {
+        "agents": [{"id": "a"}],
+        "tasks": [{"id": "t", "creator_id": "a", "assignee_id": "a",
+                   "parent_task_id": "missing"}],
+        "decisions": [{"task_id": "t", "agent_id": "a", "action": "complete"}],
+        "attempted_actions": [],
+        "action_lifecycle": [],
+    }
+    invalid = validate_trial_manifest(base)
+    assert not invalid["valid"]
+    assert any("missing parent" in error for error in invalid["errors"])
+
+    contradictory = {
+        "agents": [{"id": "a"}],
+        "tasks": [{"id": "t", "creator_id": "a", "assignee_id": "a"}],
+        "decisions": [{"task_id": "t", "agent_id": "a", "action": "complete"}],
+        "attempted_actions": [],
+        "action_lifecycle": [{
+            "task_id": "t", "completed": True, "blocked": True,
+            "technical_failure": False,
+        }],
+    }
+    assert not validate_trial_manifest(contradictory)["valid"]
