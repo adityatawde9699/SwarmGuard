@@ -1,0 +1,3 @@
+stop                           "<|start_header_id|>"
+stop                           "<|end_header_id|>"
+stop                           "<|eot_id|>"
