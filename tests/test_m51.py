@@ -1,10 +1,12 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 
 from swarmguard.db import Store
 from swarmguard.engine import SimulationEngine
 from swarmguard.llm import (
+    AmadeusAdapter,
     FakeLLMAdapter,
     LLMPolicy,
     OllamaAdapter,
@@ -25,6 +27,25 @@ class _Response:
 
     def read(self):
         return self.payload
+
+
+def test_amadeus_adapter_uses_injected_service_without_external_import():
+    class FakeService:
+        async def handle_command(self, *, user_input, context, source):
+            assert source == "swarmguard"
+            assert context.permissions.value == "read_only"
+            return '{"action":"complete","reason":"local result"}'
+
+    adapter = AmadeusAdapter(
+        project_path="/unused",
+        service_factory=FakeService,
+        context_factory=lambda: SimpleNamespace(
+            permissions=SimpleNamespace(value="read_only")),
+    )
+    response = adapter.complete("local task", seed=3)
+    assert json.loads(response)["action"] == "complete"
+    assert adapter.last_metadata["provider"] == "amadeus"
+    assert adapter.last_metadata["seed"] == 3
 
 
 def test_ollama_request_disables_streaming_and_uses_options(monkeypatch):

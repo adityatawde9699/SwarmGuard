@@ -42,10 +42,13 @@ def llm_run(scenario: str = typer.Option("legitimate_task_decomposition", "--sce
             seed: int | None = typer.Option(0, "--seed"),
             fake_action: str = typer.Option("complete", "--fake-action"),
             api_key_env: str | None = typer.Option(None, "--api-key-env"),
+            amadeus_project: str | None = typer.Option(
+                None, "--amadeus-project",
+                help="Amadeus-AI project path for the optional provider"),
             manifest: str | None = typer.Option(None, "--manifest",
                                                 help="JSON fake-agent decision manifest")):
     """Run an opt-in LLM policy; fake is the offline default."""
-    from .llm import (FakeLLMAdapter, LLMPolicy, OllamaAdapter,
+    from .llm import (AmadeusAdapter, FakeLLMAdapter, LLMPolicy, OllamaAdapter,
                       OpenAICompatibleAdapter)
     from .experiment import M4_SCENARIOS
     if scenario not in M4_SCENARIOS:
@@ -66,8 +69,13 @@ def llm_run(scenario: str = typer.Option("legitimate_task_decomposition", "--sce
         adapter = OpenAICompatibleAdapter(
             endpoint=endpoint or "http://localhost:11434/v1/chat/completions",
             model=model, api_key_env=api_key_env)
+    elif provider == "amadeus":
+        if not amadeus_project:
+            raise typer.BadParameter("--amadeus-project is required for provider amadeus")
+        adapter = AmadeusAdapter(project_path=amadeus_project)
     else:
-        raise typer.BadParameter("provider must be fake, ollama, or openai-compatible")
+        raise typer.BadParameter(
+            "provider must be fake, ollama, openai-compatible, or amadeus")
     result = __import__("swarmguard.engine", fromlist=["run_m4_scenario"]).run_m4_scenario(
         scenario, store=Store(db), mode=mode,
         policy_factory=lambda: LLMPolicy(adapter, temperature=temperature, seed=seed))

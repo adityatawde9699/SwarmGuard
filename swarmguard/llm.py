@@ -6,13 +6,16 @@ normalizes that output before it reaches the interaction engine.
 from __future__ import annotations
 
 import hashlib
+import asyncio
+import importlib
 import json
 import os
+import threading
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 from pydantic import ValidationError
 
 from .models import Agent, PolicyDecision, Task, TaskContext
@@ -37,6 +40,108 @@ class Policy(Protocol):
 
 class LLMRequestError(RuntimeError):
     """A model request failed before a valid policy decision was produced."""
+
+
+@dataclass
+class AmadeusAdapter:
+    """Optional bridge to an Amadeus ``AmadeusService`` instance.
+
+    Amadeus is an application runtime rather than a structured policy provider.
+    The bridge therefore returns its response unchanged; ``LLMPolicy`` still
+    validates that response and fails closed if it is not a JSON decision.
+    Tests can inject ``service_factory`` without importing Amadeus.
+    """
+
+    project_path: str
+    service_factory: Callable[[], Any] | None = None
+    context_factory: Callable[[], Any] | None = None
+    provider: str = "amadeus"
+    model: str = "amadeus-runtime"
+    timeout: float = 30.0
+    last_metadata: dict[str, Any] = field(default_factory=dict, init=False)
+    _service: Any = field(default=None, init=False, repr=False)
+    _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+
+    def _load_service(self) -> Any:
+        if self.service_factory is not None:
+            return self.service_factory()
+        import sys
+        if self.project_path not in sys.path:
+            sys.path.insert(0, self.project_path)
+        service_type = importlib.import_module(
+            "src.app.services.amadeus_service"
+        ).AmadeusService
+        return service_type(auto_start_orchestrator=False)
+
+    async def _complete_async(self, prompt: str) -> str:
+        with self._lock:
+            if self._service is None:
+                self._service = self._load_service()
+        service = self._service
+        initialize = getattr(service, "initialize", None)
+        if initialize is not None and not getattr(service, "_swarmguard_initialized", False):
+            await initialize()
+            setattr(service, "_swarmguard_initialized", True)
+        if self.context_factory is not None:
+            context = self.context_factory()
+        else:
+            try:
+                context_type = importlib.import_module(
+                    "src.core.domain.context"
+                ).RequestContext
+            except (ImportError, ModuleNotFoundError) as exc:
+                raise LLMRequestError("Amadeus RequestContext is unavailable") from exc
+            context = context_type(
+                request_id=f"swarmguard-{hashlib.sha256(prompt.encode()).hexdigest()[:16]}",
+                session_id="swarmguard",
+                user_id="swarmguard",
+                permissions=importlib.import_module(
+                    "src.core.domain.models"
+                ).PermissionProfile.READ_ONLY,
+            )
+        response = await service.handle_command(
+            user_input=prompt, context=context, source="swarmguard"
+        )
+        if not isinstance(response, str) or not response.strip():
+            raise LLMRequestError("Amadeus returned an empty response")
+        return response
+
+    def complete(self, prompt: str, *, temperature: float = 0.0,
+                 seed: int | None = None) -> str:
+        started = time.perf_counter()
+        try:
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                response = asyncio.run(self._complete_async(prompt))
+            else:
+                result: list[str] = []
+                error: list[BaseException] = []
+                def run() -> None:
+                    try:
+                        result.append(asyncio.run(self._complete_async(prompt)))
+                    except BaseException as exc:
+                        error.append(exc)
+                thread = threading.Thread(target=run, daemon=True)
+                thread.start()
+                thread.join(self.timeout)
+                if thread.is_alive():
+                    raise LLMRequestError("Amadeus request timeout")
+                if error:
+                    raise error[0]
+                response = result[0]
+            self.last_metadata = {
+                "provider": self.provider,
+                "model_revision": self.model,
+                "latency_ms": round((time.perf_counter() - started) * 1000, 3),
+                "temperature": temperature,
+                "seed": seed,
+            }
+            return response
+        except LLMRequestError:
+            raise
+        except Exception as exc:
+            raise LLMRequestError(f"Amadeus request failed: {exc}") from exc
 
 
 def _read_json(request: urllib.request.Request, timeout: float) -> dict[str, Any]:

@@ -58,7 +58,31 @@ task trees and contribution lineage. `SimulationLayer` executes agent policies;
 findings. `FailureInjector` models interrupted agents and failed communication.
 `ExperimentOrchestrator` checkpoints pending/running/completed/failed state in
 SQLite, making runs resumable and retryable. The implementation is deterministic
-and has no LLM, Amadeus, or Adaption dependency.
+and has no mandatory LLM, Amadeus, or Adaption dependency.
+
+## Optional Amadeus provider
+
+SwarmGuard can use an existing local Amadeus-AI checkout as an optional policy
+provider without making Amadeus a required dependency. The adapter invokes
+Amadeus through its public `AmadeusService.handle_command()` boundary, passes a
+least-privilege read-only request context, and returns the response unchanged.
+`LLMPolicy` still validates the response as a `PolicyDecision` and fails closed
+when Amadeus returns prose or malformed JSON; no response repair or fabricated
+decision is performed.
+
+For example:
+
+```bash
+uv run swarmguard llm-run \
+  --scenario legitimate_task_decomposition \
+  --provider amadeus \
+  --amadeus-project /home/adityatawde/Projects/Amadeus-AI \
+  --mode enforce
+```
+
+This integration is deliberately opt-in and does not alter deterministic,
+FakeLLM, Ollama, or OpenAI-compatible conditions. Amadeus runtime dependencies
+must be installed in the environment used for the integration.
 
 ### M4.1 interaction semantics
 

@@ -643,7 +643,10 @@ def _llm_policy_factory(config: dict | None, seed: int):
     settings = config or {}
     if settings.get("agent_policy", "deterministic") != "llm":
         return None
-    from .llm import FakeLLMAdapter, LLMPolicy, OllamaAdapter, OpenAICompatibleAdapter
+    from .llm import (
+        AmadeusAdapter, FakeLLMAdapter, LLMPolicy, OllamaAdapter,
+        OpenAICompatibleAdapter,
+    )
     provider = settings.get("provider", "fake")
     model = settings.get("model", "llama3.2")
     endpoint = settings.get("endpoint")
@@ -671,6 +674,14 @@ def _llm_policy_factory(config: dict | None, seed: int):
                 endpoint=agent_endpoint or "http://localhost:11434/v1/chat/completions",
                 model=agent_model, timeout=float(agent_settings.get("timeout", 30)),
                 api_key_env=agent_settings.get("api_key_env"))
+        elif agent_provider == "amadeus":
+            project_path = agent_settings.get("amadeus_project")
+            if not project_path:
+                raise ValueError("amadeus_project is required for the Amadeus provider")
+            adapter = AmadeusAdapter(
+                project_path=project_path,
+                timeout=float(agent_settings.get("timeout", 30)),
+            )
         else:
             raise ValueError(f"unknown LLM provider: {agent_provider}")
         return LLMPolicy(adapter, temperature=agent_temperature, seed=seed,
