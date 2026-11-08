@@ -203,6 +203,13 @@ delegations can reference a preceding refusal event; delegated tasks retain
 their parent task and receiving-agent decision; and action records distinguish
 proposed, authorized, executed, blocked, and completed states. Trial manifests
 are validated for missing parents, unknown owners, mismatched decision
-ownership, missing causal references, and contradictory blocked/completed or
-technical-failure/completed states. Ground truth continues to come from the
-objective and execution ledger rather than detector findings.
+ownership, missing causal references, duplicate IDs, cross-trial references,
+timestamp ordering, cyclic task lineage, missing delegation delivery, and
+contradictory blocked/completed or technical-failure/completed states. The
+research audit is written alongside aggregate output as `.audit.json`; it
+reports invalid traces, ground-truth audit failures, technical model failures,
+and rates adjusted by excluding those failures. Zero eligible trials produce
+an explicit undefined (`null`) rate. Ground truth continues to come from the
+objective and execution ledger rather than detector findings. These structural
+and temporal links are execution evidence, not independent proof that one
+event caused another.

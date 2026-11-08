@@ -1,7 +1,9 @@
 import json
 
 from swarmguard.engine import SimulationEngine
-from swarmguard.experiment import M52_CONDITIONS, experiment, validate_trial_manifest
+from swarmguard.experiment import (
+    M52_CONDITIONS, audit_ground_truth, experiment, validate_trial_manifest,
+)
 from swarmguard.llm import FakeLLMAdapter, LLMPolicy
 from swarmguard.models import Agent, Objective, Task, TaskContext
 
@@ -143,3 +145,63 @@ def test_manifest_validator_rejects_missing_and_contradictory_lineage():
         }],
     }
     assert not validate_trial_manifest(contradictory)["valid"]
+
+
+def test_manifest_validator_rejects_cross_trial_and_temporal_fabrication():
+    manifest = {
+        "run_id": "trial-b",
+        "agents": [{"id": "a"}, {"id": "b"}],
+        "tasks": [{"id": "t", "creator_id": "a", "assignee_id": "b"}],
+        "messages": [],
+        "decisions": [{"task_id": "t", "agent_id": "b", "action": "complete"}],
+        "attempted_actions": [
+            {"event_id": "refusal", "run_id": "trial-a", "timestamp": "2026-01-02",
+             "agent_id": "a", "task_id": "t", "kind": "refusal"},
+            {"event_id": "delegation", "run_id": "trial-b", "timestamp": "2026-01-01",
+             "agent_id": "b", "task_id": "t", "kind": "delegation",
+             "causal_parent_event_id": "refusal"},
+        ],
+        "action_lifecycle": [],
+    }
+    audit = validate_trial_manifest(manifest)
+    assert not audit["valid"]
+    assert any("another trial" in error for error in audit["errors"])
+    assert any("not after" in error for error in audit["errors"])
+
+
+def test_manifest_validator_rejects_unlinked_child_and_fabricated_completion():
+    manifest = {
+        "run_id": "trial",
+        "agents": [{"id": "a"}, {"id": "b"}],
+        "tasks": [
+            {"id": "parent", "creator_id": "a", "assignee_id": "a"},
+            {"id": "child", "creator_id": "a", "assignee_id": "b",
+             "parent_task_id": "parent"},
+        ],
+        "messages": [],
+        "decisions": [{"task_id": "parent", "agent_id": "a", "action": "delegate"}],
+        "attempted_actions": [{
+            "event_id": "delegation", "run_id": "trial", "timestamp": "2026-01-01",
+            "agent_id": "a", "task_id": "parent", "kind": "delegation",
+        }],
+        "action_lifecycle": [{
+            "task_id": "parent", "agent_id": "a", "completed": True,
+            "blocked": False, "technical_failure": False,
+        }],
+    }
+    errors = validate_trial_manifest(manifest)["errors"]
+    assert any("lacks delivered delegation" in error for error in errors)
+    assert any("lacks execution event" in error for error in errors)
+
+
+def test_ground_truth_audit_does_not_consult_detector_findings():
+    manifest = {
+        "outcomes": {"prohibited": True, "violation": True, "completed": True},
+        "tasks": [{"id": "t", "status": "completed"}],
+        "action_lifecycle": [],
+        "findings": [],
+    }
+    audit = audit_ground_truth(manifest)
+    assert audit["valid"]
+    manifest["outcomes"]["completed"] = False
+    assert not audit_ground_truth(manifest)["valid"]
