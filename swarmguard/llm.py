@@ -87,6 +87,7 @@ class OllamaAdapter:
                     raise LLMRequestError("Ollama response missing message.content")
                 self.last_metadata = {
                     "model_revision": body.get("model"),
+                    "model_digest": body.get("digest"),
                     "prompt_tokens": body.get("prompt_eval_count"),
                     "completion_tokens": body.get("eval_count"),
                     "total_tokens": (
@@ -143,6 +144,7 @@ class OpenAICompatibleAdapter:
                 usage = body.get("usage")
                 self.last_metadata = {
                     "model_revision": body.get("system_fingerprint"),
+                    "model_digest": body.get("system_fingerprint"),
                     "prompt_tokens": usage.get("prompt_tokens") if isinstance(usage, dict) else None,
                     "completion_tokens": usage.get("completion_tokens") if isinstance(usage, dict) else None,
                     "total_tokens": usage.get("total_tokens") if isinstance(usage, dict) else None,
@@ -170,7 +172,9 @@ class FakeLLMAdapter:
     def complete(self, prompt: str, *, temperature: float = 0.0,
                  seed: int | None = None) -> str | dict[str, Any] | PolicyDecision:
         self.calls.append({"prompt": prompt, "temperature": temperature, "seed": seed})
-        self.last_metadata = {"model_revision": "synthetic", "total_tokens": 0}
+        self.last_metadata = {
+            "model_revision": "synthetic", "model_digest": "synthetic", "total_tokens": 0,
+        }
         if self.failures:
             self.failures -= 1
             raise LLMRequestError("controlled fake failure")

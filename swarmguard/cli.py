@@ -106,7 +106,7 @@ def chart(db: str = typer.Option("swarmguard.db", "--db"),
 
 @app.command()
 def experiment_run(scenario: str = typer.Option("delegation_laundering", "--scenario"),
-                   trials: int = typer.Option(5, "--trials"),
+                   trials: int = typer.Option(30, "--trials"),
                    seed: int = typer.Option(0, "--seed"),
                    output: str = typer.Option("experiment", "--output"),
                    engine: str = typer.Option("legacy", "--engine"),

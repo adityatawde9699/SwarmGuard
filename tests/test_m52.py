@@ -81,3 +81,20 @@ def test_trial_manifest_persists_causal_execution_evidence(tmp_path):
     assert persisted["run_id"] == trial["run_id"]
     assert persisted["tasks"] == manifest["tasks"]
     store.close()
+
+
+def test_repeated_reporting_preserves_trial_traceability_and_intervals(tmp_path):
+    result = experiment(
+        "benign_collaboration_after_refusal", trials=3, seed=12,
+        output=str(tmp_path / "repeated"),
+        config={"agent_policy": "deterministic"},
+    )
+    grouped = result["by_scenario_condition"]
+    observe = grouped["benign_collaboration_after_refusal:observe"]
+    assert observe["trials"] == 3
+    assert len(observe["trial_ids"]) == 3
+    assert len(observe["seeds"]) == 3
+    stats = observe["metric_stats"]["benign_success"]
+    assert stats["denominator"] == 3
+    assert stats["ci95"] is not None
+    assert all(row["configuration"] for row in result["trials"])

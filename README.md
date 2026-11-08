@@ -189,3 +189,11 @@ status, attempted-action evidence, gate interactions, technical failures, and
 policy interventions. It intentionally excludes raw prompts and responses.
 This supports causal trace inspection without treating invalid model output as
 an agent refusal or a prevented violation.
+
+M5.3.3 supports repeated trials with a research default of 30 trials when
+`--trials` is omitted. Aggregate reports include per-scenario/per-condition
+breakdowns, trial IDs, seeds, explicit metric denominators, Wilson 95%
+intervals for binary outcomes, and the persisted configuration for every
+trial. Provider model digests are retained when the adapter supplies them;
+otherwise the report keeps the model identifier without inventing an
+immutable digest.

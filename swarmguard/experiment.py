@@ -41,7 +41,7 @@ M52_CONDITIONS = {
 }
 CORE_SUITE = sorted(M4_SCENARIOS)
 
-def experiment(scenario: str, trials: int = 5, seed: int = 0,
+def experiment(scenario: str, trials: int = 30, seed: int = 0,
                output: str = "experiment", config: dict | None = None,
                suite: str | None = None) -> dict:
     if suite == "core":
@@ -117,7 +117,7 @@ def _m4_experiment(scenarios: list[str], trials: int, seed: int,
     default_conditions = M52_CONDITIONS if settings.get("condition_set") == "m52" else M4_CONDITIONS
     selected = settings.get("conditions", default_conditions)
     if isinstance(selected, list):
-        selected = {name: M4_CONDITIONS[name] for name in selected}
+        selected = {name: default_conditions[name] for name in selected}
     out = Path(output); out.parent.mkdir(parents=True, exist_ok=True)
     path = out.with_suffix(".results.json")
     records = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
@@ -209,6 +209,10 @@ def _m4_experiment(scenarios: list[str], trials: int, seed: int,
                         str(item["model_revision"]) for item in metadata
                         if item.get("model_revision")
                     })
+                    model_digests = sorted({
+                        str(item["model_digest"]) for item in metadata
+                        if item.get("model_digest")
+                    })
                     trial_manifest = _trial_manifest(result, store, run_id, trial_seed)
                     store.save_trial_manifest(run_id, trial_manifest)
                     # Rate aliases keep the M3 report vocabulary compatible
@@ -239,6 +243,7 @@ def _m4_experiment(scenarios: list[str], trials: int, seed: int,
                         "experiment_id": experiment_id, "run_id": run_id,
                         "scenario": name, "condition": condition,
                         "condition_name": spec["name"], "trial": trial,
+                        "configuration": condition_config,
                         "seed": trial_seed, "status": "completed",
                         "outcome": "blocked" if intervened else "success",
                         "metrics": metrics, **metrics,
@@ -248,6 +253,7 @@ def _m4_experiment(scenarios: list[str], trials: int, seed: int,
                         "model_failures": metrics["failed_model_requests"],
                         "model_latency_ms": metrics["model_latency_ms"],
                         "model_revisions": model_revisions,
+                        "model_digests": model_digests,
                         "trial_manifest": trial_manifest,
                     })
                 except Exception as exc:
@@ -311,11 +317,70 @@ def _m4_experiment(scenarios: list[str], trials: int, seed: int,
                 center = (p + z*z/(2*n))/den
                 half = z*math.sqrt(p*(1-p)/n + z*z/(4*n*n))/den
                 aggregate[condition][metric + "_ci95"] = [max(0, center-half), min(1, center+half)]
+    by_scenario_condition = {}
+    for name in scenarios:
+        for condition in selected:
+            rows = [r for r in records if r.get("scenario") == name
+                    and r.get("condition") == condition
+                    and r.get("status") == "completed"]
+            by_scenario_condition[f"{name}:{condition}"] = _aggregate_rows(rows)
     result = {"experiment_id": experiment_id, "config": cfg, "trials": records,
-              "aggregate": aggregate}
+              "aggregate": aggregate,
+              "by_scenario_condition": by_scenario_condition}
     (out.with_suffix(".aggregate.json")).write_text(json.dumps(result, indent=2), encoding="utf-8")
     _write_chart(out.with_suffix(".svg"), aggregate)
     return result
+
+
+_BERNOULLI_METRICS = {
+    "attack_attempt", "detection", "intervention", "successful_violation",
+    "prevention", "benign_success", "false_positive",
+    "unnecessary_intervention", "attack_attempt_rate", "detection_rate",
+    "intervention_rate", "successful_violation_rate", "prevention_rate",
+    "benign_success_rate", "false_positive_rate",
+    "unnecessary_intervention_rate",
+}
+
+
+def _wilson(successes: int, denominator: int) -> list[float] | None:
+    if denominator == 0:
+        return None
+    p = successes / denominator
+    z = 1.96
+    scale = 1 + z * z / denominator
+    center = (p + z * z / (2 * denominator)) / scale
+    half = z * math.sqrt(
+        p * (1 - p) / denominator + z * z / (4 * denominator * denominator)
+    ) / scale
+    return [max(0.0, center - half), min(1.0, center + half)]
+
+
+def _aggregate_rows(rows: list[dict]) -> dict:
+    """Aggregate only completed rows while preserving metric denominators."""
+    summary: dict[str, object] = {
+        "trials": len(rows),
+        "trial_ids": [r.get("run_id") for r in rows],
+        "seeds": [r.get("seed") for r in rows],
+    }
+    stats = {}
+    keys = sorted({key for row in rows for key in row})
+    for metric in keys:
+        values = [row.get(metric) for row in rows]
+        numeric = [float(value) for value in values
+                   if isinstance(value, (int, float))]
+        if not numeric:
+            continue
+        summary[metric] = sum(numeric) / len(numeric)
+        if metric in _BERNOULLI_METRICS:
+            successes = sum(1 for value in numeric if value == 1.0)
+            stats[metric] = {
+                "successes": successes,
+                "denominator": len(numeric),
+                "rate": successes / len(numeric),
+                "ci95": _wilson(successes, len(numeric)),
+            }
+    summary["metric_stats"] = stats
+    return summary
 
 
 def _trial_manifest(result: dict, store: Store, run_id: str,
