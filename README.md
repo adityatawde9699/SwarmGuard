@@ -6,6 +6,18 @@ NetworkX provenance graph, detects refusal laundering/shopping and blind
 decomposition, and applies an observe/enforce group policy gate. It performs no
 external operations and makes no claims about real-world efficacy.
 
+## Previous work: Amadeus-AI
+
+Amadeus-AI is the prior local-first autonomous assistant/runtime used as an
+optional external policy provider during SwarmGuard integration testing:
+
+<https://github.com/adityatawde9699/Amadeus-AI>
+
+SwarmGuard does not require Amadeus-AI for deterministic experiments. The
+optional adapter loads an existing Amadeus checkout and uses its local
+`llama_cpp` provider when configured. Amadeus remains a separate project with
+its own dependencies, runtime state, and release history.
+
 ```bash
 uv sync --extra dev
 uv run swarmguard run --scenario delegation_laundering --db run.db --report report.json
