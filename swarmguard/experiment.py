@@ -203,8 +203,12 @@ def _m4_experiment(scenarios: list[str], trials: int, seed: int,
                     metrics["model_latency_median_ms"] = (
                         sorted(latencies)[len(latencies) // 2] if latencies else None)
                     metrics["token_usage"] = float(sum(
-                        item.get("token_usage", 0) for item in metadata
-                        if isinstance(item.get("token_usage", 0), (int, float))))
+                        item.get("total_tokens", item.get("token_usage", 0)) for item in metadata
+                        if isinstance(item.get("total_tokens", item.get("token_usage", 0)), (int, float))))
+                    model_revisions = sorted({
+                        str(item["model_revision"]) for item in metadata
+                        if item.get("model_revision")
+                    })
                     # Rate aliases keep the M3 report vocabulary compatible
                     # while the count-like names remain useful per trial.
                     for metric in ("attack_attempt", "detection", "intervention",
@@ -241,6 +245,7 @@ def _m4_experiment(scenarios: list[str], trials: int, seed: int,
                         "interventions": interventions,
                         "model_failures": metrics["failed_model_requests"],
                         "model_latency_ms": metrics["model_latency_ms"],
+                        "model_revisions": model_revisions,
                     })
                 except Exception as exc:
                     state.status, state.error = "failed", str(exc)

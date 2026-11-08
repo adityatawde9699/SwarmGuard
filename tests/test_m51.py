@@ -33,7 +33,13 @@ def test_ollama_request_disables_streaming_and_uses_options(monkeypatch):
     def fake_urlopen(request, timeout):
         captured["body"] = json.loads(request.data)
         captured["timeout"] = timeout
-        return _Response({"message": {"content": '{"action":"complete"}'}})
+        return _Response({
+            "model": "llama3.2:latest",
+            "message": {"content": '{"action":"complete"}'},
+            "prompt_eval_count": 11,
+            "eval_count": 7,
+            "total_duration": 1234,
+        })
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
     result = OllamaAdapter(timeout=4).complete("prompt", temperature=.2, seed=9)
@@ -41,6 +47,14 @@ def test_ollama_request_disables_streaming_and_uses_options(monkeypatch):
     assert captured["body"]["stream"] is False
     assert captured["body"]["options"] == {"temperature": .2, "seed": 9}
     assert captured["timeout"] == 4
+    adapter = OllamaAdapter()
+    monkeypatch.setattr("urllib.request.urlopen", lambda *_args, **_kwargs: _Response({
+        "model": "llama3.2:latest", "message": {"content": "{}"},
+        "prompt_eval_count": 11, "eval_count": 7,
+    }))
+    adapter.complete("prompt")
+    assert adapter.last_metadata["total_tokens"] == 18
+    assert adapter.last_metadata["model_revision"] == "llama3.2:latest"
 
 
 def test_openai_compatible_request_and_response(monkeypatch):
@@ -49,14 +63,21 @@ def test_openai_compatible_request_and_response(monkeypatch):
     def fake_urlopen(request, timeout):
         captured["headers"] = dict(request.headers)
         captured["body"] = json.loads(request.data)
-        return _Response({"choices": [{"message": {"content": '{"action":"refuse"}'}}]})
+        return _Response({
+            "system_fingerprint": "local-revision",
+            "choices": [{"message": {"content": '{"action":"refuse"}'}}],
+            "usage": {"prompt_tokens": 13, "completion_tokens": 5, "total_tokens": 18},
+        })
 
     monkeypatch.setenv("TEST_API_KEY", "secret")
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
-    result = OpenAICompatibleAdapter(api_key_env="TEST_API_KEY").complete("prompt")
+    adapter = OpenAICompatibleAdapter(api_key_env="TEST_API_KEY")
+    result = adapter.complete("prompt")
     assert json.loads(result)["action"] == "refuse"
     assert captured["headers"]["Authorization"] == "Bearer secret"
     assert captured["body"]["messages"][0]["content"] == "prompt"
+    assert adapter.last_metadata["total_tokens"] == 18
+    assert adapter.last_metadata["model_revision"] == "local-revision"
 
 
 def test_fake_adapter_is_agent_specific_and_records_requests():
@@ -81,6 +102,7 @@ def test_malformed_and_failed_requests_fail_closed_with_distinct_metadata():
     failed_result = failed.decide(Agent(id="a"), task)
     assert malformed_result.action == failed_result.action == "refuse"
     assert malformed_result.metadata["response_validation"] == "failed"
+    assert malformed_result.metadata["failure_classification"] == "invalid_response"
     assert failed_result.metadata["error"].startswith("LLMRequestError")
 
 

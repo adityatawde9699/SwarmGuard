@@ -13,6 +13,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Protocol
+from pydantic import ValidationError
 
 from .models import Agent, PolicyDecision, Task, TaskContext
 
@@ -22,6 +23,7 @@ PROMPT_TEMPLATE_VERSION = "m5.1-local-context-v1"
 class LLMAdapter(Protocol):
     provider: str
     model: str
+    last_metadata: dict[str, Any]
 
     def complete(self, prompt: str, *, temperature: float = 0.0,
                  seed: int | None = None) -> str | dict[str, Any]: ...
@@ -41,6 +43,9 @@ def _read_json(request: urllib.request.Request, timeout: float) -> dict[str, Any
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             body = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        category = "rate_limit" if exc.code == 429 else f"http_{exc.code}"
+        raise LLMRequestError(f"{category}: HTTP {exc.code}") from exc
     except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
         raise LLMRequestError(f"{type(exc).__name__}: {exc}") from exc
     if not isinstance(body, dict):
@@ -56,6 +61,7 @@ class OllamaAdapter:
     timeout: float = 30.0
     options: dict[str, Any] = field(default_factory=dict)
     max_retries: int = 0
+    last_metadata: dict[str, Any] = field(default_factory=dict, init=False)
 
     def complete(self, prompt: str, *, temperature: float = 0.0,
                  seed: int | None = None) -> str:
@@ -79,6 +85,18 @@ class OllamaAdapter:
                 message = body.get("message")
                 if not isinstance(message, dict) or not isinstance(message.get("content"), str):
                     raise LLMRequestError("Ollama response missing message.content")
+                self.last_metadata = {
+                    "model_revision": body.get("model"),
+                    "prompt_tokens": body.get("prompt_eval_count"),
+                    "completion_tokens": body.get("eval_count"),
+                    "total_tokens": (
+                        body.get("prompt_eval_count", 0) + body.get("eval_count", 0)
+                        if isinstance(body.get("prompt_eval_count"), int)
+                        and isinstance(body.get("eval_count"), int) else None
+                    ),
+                    "provider_duration_ns": body.get("total_duration"),
+                    "load_duration_ns": body.get("load_duration"),
+                }
                 return message["content"]
             except LLMRequestError as exc:
                 last = exc
@@ -93,6 +111,7 @@ class OpenAICompatibleAdapter:
     timeout: float = 30.0
     api_key_env: str | None = None
     max_retries: int = 0
+    last_metadata: dict[str, Any] = field(default_factory=dict, init=False)
 
     def complete(self, prompt: str, *, temperature: float = 0.0,
                  seed: int | None = None) -> str:
@@ -121,6 +140,13 @@ class OpenAICompatibleAdapter:
                 content = choices[0].get("message", {}).get("content")
                 if not isinstance(content, str):
                     raise LLMRequestError("OpenAI response missing choices[0].message.content")
+                usage = body.get("usage")
+                self.last_metadata = {
+                    "model_revision": body.get("system_fingerprint"),
+                    "prompt_tokens": usage.get("prompt_tokens") if isinstance(usage, dict) else None,
+                    "completion_tokens": usage.get("completion_tokens") if isinstance(usage, dict) else None,
+                    "total_tokens": usage.get("total_tokens") if isinstance(usage, dict) else None,
+                }
                 return content
             except LLMRequestError as exc:
                 last = exc
@@ -139,10 +165,12 @@ class FakeLLMAdapter:
     provider: str = "fake"
     model: str = "fake-v1"
     calls: list[dict[str, Any]] = field(default_factory=list)
+    last_metadata: dict[str, Any] = field(default_factory=dict, init=False)
 
     def complete(self, prompt: str, *, temperature: float = 0.0,
                  seed: int | None = None) -> str | dict[str, Any] | PolicyDecision:
         self.calls.append({"prompt": prompt, "temperature": temperature, "seed": seed})
+        self.last_metadata = {"model_revision": "synthetic", "total_tokens": 0}
         if self.failures:
             self.failures -= 1
             raise LLMRequestError("controlled fake failure")
@@ -224,6 +252,7 @@ class LLMPolicy:
             if decision.action == "delegate" and not decision.target and self.delegation_targets:
                 decision.target = self.delegation_targets[0]
             metadata["response_validation"] = "valid"
+            metadata.update(getattr(self.adapter, "last_metadata", {}))
             metadata["latency_ms"] = round((time.perf_counter() - started) * 1000, 3)
             decision.metadata = {**decision.metadata, **metadata}
             return decision
@@ -233,7 +262,7 @@ class LLMPolicy:
                 failure_classification = "timeout"
             elif "rate" in error_text:
                 failure_classification = "rate_limit"
-            elif "json" in error_text or "validation" in error_text:
+            elif isinstance(exc, (json.JSONDecodeError, ValidationError)) or "json" in error_text or "validation" in error_text:
                 failure_classification = "invalid_response"
             elif "authorization" in error_text or "unauthorized" in error_text:
                 failure_classification = "authorization"
@@ -245,6 +274,7 @@ class LLMPolicy:
                 "error": f"{type(exc).__name__}: {exc}",
                 "failure_classification": failure_classification,
             })
+            metadata.update(getattr(self.adapter, "last_metadata", {}))
             return PolicyDecision(action="refuse", reason="Technical policy failure",
                                   metadata=metadata)
 
